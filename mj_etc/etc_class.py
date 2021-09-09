@@ -2,6 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
 import astropy.constants as const
+import pandas as pd
+
+import os 
+
+package_directory = os.path.dirname(os.path.abspath(__file__)) + '/'
 
 def mag2flux(mag):
 	flux = 10**(-(mag+48.6)/2.5)
@@ -10,18 +15,57 @@ def mag2flux(mag):
 
 class ETC():
 
-	def __init__(self,detector,telescope,source_mag=np.nan,moon_phase=0,seeing=2):
-		self.detector = detector
-		self.telescope = telescope
+	def __init__(self,bandpass,detector,telescope,source_mag=np.nan,moon_phase='dark',seeing=2):
+		self.detector = self._set_detector(detector,bandpass)
+		self.telescope = self._set_telescope(telescope)
+		self.source_mag = source_mag
 		self.seeing = seeing
-		self.sky = Sky(moon_phase, detector, telescope)
-		self.source = Source(source_mag, detector, telescope)
-		self.exp_time = np.arange(.1,1000,1) * u.s
+		self.sky = Sky(moon_phase, self.detector, self.telescope)
+		self.source = Source(source_mag, self.detector, self.telescope)
+		self.exp_time = np.nan
 		# calculated
-		self.pixels = np.nan
+		self.pixels = self.aperture_size()
 		self.noise = np.nan
 		self.signal = np.nan
 		self.snr = np.nan
+
+
+	def _get_detector_params(self,name):
+		table = pd.read_csv(package_directory + 'camera_params.csv')
+		ind = np.where(name.upper() == table['name'].values)[0]
+		if len(ind) == 0:
+			m = 'Detector {} does not exist'.format(name)
+			raise ValueError(m)
+		params = table.iloc[ind]
+		return params
+
+	def _get_bandpass(self,bandpass):
+		b = Bandpass(bandpass)
+		return b
+
+	def _set_detector(self,name,bandpass):
+		p = self._get_detector_params(name)
+		b =  self._get_bandpass(bandpass)
+		d = Detector(name = p['name'][0], dark_current = p['dark_current'][0] / u.s, 
+					 read_noise = p['read_noise'][0], gain = p['gain'][0], 
+					 pixel_size = p['pixel_size'][0] * u.um, bandpass = b)
+		return d
+
+	def _get_telescope_params(self,name):
+		table = pd.read_csv(package_directory + 'telescope_params.csv')
+		try:
+			ind = np.where(name == table['name'].values)[0][0]
+		except:
+			raise ValueError('Telescope {} does not exist'.format(name))
+		params = table.iloc[ind]
+		return params
+	
+	def _set_telescope(self,name):
+		p = self._get_telescope_params(name)
+		t = Telescope(name = p['name'], diameter = p['diameter'], 
+					  throughput = p['throughput'], f_num = p['f_num'])
+		return t
+
 
 	def calc_sky_photons(self):
 		self.sky.sky_signal()
@@ -30,21 +74,31 @@ class ETC():
 		self.source.source_signal()
 
 	def aperture_size(self):
-		pix = ceil(self.seeing / self.detector.platescale)
+		ps = self.telescope.platescale / self.detector.pix_size.to(u.mm).value
+		pix = np.ceil(self.seeing / ps)
 		pix2 = pix**2
-		self.pixels = pix2
+		return pix2
 
 	def calculate_noise(self):
+		self.sky.sky_signal()
+		self.source.source_signal()
 		dc = self.detector.dark_current * self.exp_time * self.pixels**2
-		sky = np.sqrt(self.sky.sky_photons * self.telescope.throughput * self.exp_time)
-		source = np.sqrt(self.source.source_photons * self.telescope.throughput * self.exp_time)
+		sky = np.sqrt(self.sky.photons * self.telescope.throughput 
+					  * self.exp_time * self.detector.qe)
+		source = np.sqrt(self.source.photons * self.telescope.throughput 
+				     	 * self.exp_time * self.detector.qe)
 		read = self.detector.read_noise * self.pixels**2
-
+		#print(dc)
+		#print(sky)
+		#print(source)
+		#print(read)
 		noise = np.sqrt(dc**2+sky**2+source**2+read**2)
 		self.noise = noise
 
 	def calculate_signal(self):
-		source = self.source.source_photons * self.telescope.throughput * self.exp_time
+		self.source.source_signal()
+		source = (self.source.photons * self.telescope.throughput 
+				  * self.exp_time * self.detector.qe)
 		self.signal = source
 
 	def calculate_SNR(self):
@@ -53,10 +107,12 @@ class ETC():
 		self.snr = self.signal / self.noise
 
 
-	def time_for_snr(self,snr,plot=False):
-		time = np.arange(.1,1000,1) * u.s
+	def time_for_snr(self,snr,mag=None,plot=False):
+		if mag is not None:
+			self.source = Source(mag, self.detector, self.telescope)
+		time = np.arange(.1,1e5,1) * u.s
 		# should be updated with a loop
-		self.time = time 
+		self.exp_time = time 
 		self.calculate_SNR()
 
 		ind = np.argmin(abs(self.snr - snr))
@@ -67,12 +123,14 @@ class ETC():
 
 	def snr_plot(self,snr):
 		plt.figure()
-		plt.plot(self.time,self.snr)
-		plt.axhline(snr,ls='--')
+		plt.plot(self.exp_time,self.snr)
+		plt.axhline(snr,ls='--',color='r')
 		plt.ylabel('SNR')
 		plt.xlabel('Exposure time [s]')
 
-	def snr_for_time(self,time):
+	def snr_for_time(self,time,mag=None):
+		if mag is not None:
+			self.source = Source(mag, self.detector, self.telescope)
 		self.exp_time = time 
 		self.calculate_SNR()
 		return self.snr
@@ -80,59 +138,57 @@ class ETC():
 
 
 
-
-
-
-
-
 class Telescope():
-	def __init__(self,name,diameter,throughput):
+	def __init__(self,name,diameter,throughput,f_num):
 		self.name = name
-		self.diameter = diameter
+		self.f_num = f_num
+		self.diameter = diameter * u.m
 		self.throughput = throughput
-		self.area = np.pi*(diameter/2)**2
+		self.area = np.pi*(self.diameter/2)**2
+		self.platescale = self.calculate_plate_scale()
 
+	def calculate_plate_scale(self):
+		p = 206265 / self.f_num # 
+		return p
 
-
-sky_brightness_table = 'path'
-phases = np.array([])
 
 class Sky():
 	def __init__(self,moon_phase,detector,telescope):
 		self.detector = detector
+		self.telescope = telescope
 		self.moon_phase = moon_phase
 		self.sky_brightness = self._get_sky()
 		self.photons = np.nan
 
 
-	def _get_band_brightness():
-		tab = pd.read_csv(sky_brightness_table)
-		ind = np.where(self.detector.bandpass.name == tab['name'].values)[0]
-		if len(ind) == 0:
-			m = 'No such filter!'
-			raise ValueError(m)
-		if len(ind) > 0:
-			m = 'Multiple filter definitions!'
-			raise ValueError(m)
-		return tab.iloc[ind]
+	def _get_band_brightness(self):
+		"""
+		Table values taken from: 
+		https://www.mso.anu.edu.au/~pfrancis/reference/reference/node4.html
+		"""
+		tab = pd.read_csv(package_directory + 'sky_brightness.csv')
+		t = tab.iloc[self.detector.bandpass._tab_ind]
+		return t
 
 	def _get_sky(self):
 		tab = self._get_band_brightness()
-		ind = np.argmin(abs(self.moon-phases))
-		return tab[ind]
+		sky = tab[self.moon_phase]
+		return sky
 
 	def sky_signal(self):
-		sky = mag2flux(mag)
+		sky = mag2flux(self.sky_brightness)
 		# multiply by plate scale
-		flux = sky * self.detector.platescale**2
+		flux = sky * self.telescope.platescale**2
 		#convert to SI units 
 		flux = flux.to(u.J/u.s/u.Hz/u.m**2)
 		# convert to Lambda [J/s/m/m^2/pix]
 		flux_lam = flux * const.c / (self.detector.bandpass.wavelength.to(u.m)**2)
+		#flux_lam = flux_lam.to(u.J/ u.s/ u.m /u.m**2)
 		# multiply by bandwidth [J/s/m^2/pix]
 		flux_lam = flux_lam * self.detector.bandpass.bandwidth.to(u.m)
 		# multiply by size of telescope [J/s/pix]
 		flux_lam = flux_lam * self.telescope.area
+		# divide by average energy of a photon 
 		sky_photons = flux_lam / ((const.h * const.c)/self.detector.bandpass.wavelength.to(u.m))
 		self.photons = sky_photons
 
@@ -150,7 +206,7 @@ class Source():
 	def source_signal(self):
 		source = mag2flux(self.mag)
 		#convert to SI units 
-		flux = flux.to(u.J/u.s/u.Hz/u.m**2)
+		flux = source.to(u.J/u.s/u.Hz/u.m**2)
 		# convert to Lambda [J/s/m/m^2]
 		flux_lam = flux * const.c / (self.detector.bandpass.wavelength.to(u.m)**2)
 		# multiply by bandwidth [J/s/m^2]
@@ -166,16 +222,16 @@ class Source():
 
 
 class Detector():
-	def __init__(self,dark_current,read_noise,gain,qe,platescale,pixel_size,bandpass):
+	def __init__(self,name,dark_current,read_noise,gain,pixel_size,bandpass):
+		self.name = name
+		self.bandpass = bandpass
 		self.dark_current = dark_current
 		self.read_noise = read_noise
-		self.qe = qe
+		self.qe = self._get_qe()
 		self.gain = gain
 		self.pix_size = pixel_size
-		self.bandpass = bandpass
 
-
-		self.check_inputs()
+		#self.check_inputs()
 
 	
 	def check_inputs(self):
@@ -197,33 +253,40 @@ class Detector():
 		dc = self.dark_current * time 
 		return dc 
 
+	def _get_qe(self):
+		tab = self.bandpass._table.iloc[self.bandpass._tab_ind]
+		qe = tab[self.name + '_qe']
+		return qe
+
 
 
 class Bandpass():
 	def __init__(self,name):
 		self.name = name
+		self._table = self._load_table()
+		self._tab_ind = self._get_index()
+
 		self.bandwidth = self._get_bandwidth()
 		self.wavelength = self._get_wavelength()
 
-	def _get_index():
-		bandpass_table = 'path'
-		tab = pd.read_csv(bandpass_table)
-		ind = np.where(self.name == tab['name'].values)[0]
-		if len(ind) == 0:
-			m = 'No such filter!'
-			raise ValueError(m)
-		if len(ind) > 0:
-			m = 'Multiple filter definitions!'
-			raise ValueError(m)
-		return tab.iloc[ind]
+		
 
-	def get_bandwidth(self):
-		tab = self._get_entry()
-		bw = tab['bandwidth'] * u.nm
+	def _load_table(self):
+		tab = pd.read_csv(package_directory + 'bandpass_params.csv')
+		return tab
+
+	def _get_index(self):
+		try:
+			ind = np.where(self.name == self._table['name'].values)[0][0]
+		except:
+			raise ValueError('No such filter!')
+		return ind
+
+	def _get_bandwidth(self):
+		
+		bw = self._table.iloc[self._tab_ind]['bandwidth'] * u.nm
 		return bw 
 
-	def get_wavelength(self):
-		tab = self._get_entry()
-		wav = tab['wavelength'] * nm
+	def _get_wavelength(self):
+		wav = self._table.iloc[self._tab_ind]['wavelength'] * u.nm
 		return wav
-
