@@ -29,4 +29,18 @@ We can set the sky brightness with the `moon_phase` variable. Options for Moon p
 - grey
 - dark
 
-Please report and issues to: ryan.ridden@canterbury.ac.nz
+The MOA imager currently has the following filters:
+- Bessel V
+- moaR
+- Bessel I
+
+The FLI imager currently has the following filters:
+- Bessel BVRI
+- Sloan griz
+- Halpha
+- O III
+- Si II
+- Methane
+
+
+Please report any issues to: ryan.ridden@canterbury.ac.nz
