@@ -19,14 +19,14 @@ etc.time_for_snr(5,mag=22,plot=True)
 So we can see that a SNR of 5 should be achieved with a 400s exposure during bright time.
 
 Possible telescopes and detector combinations currently are:
-	- B&C (0.6m; FLI imager)
-	- OC (0.6m, robotic; FLI imager)
-	- 1m (FLI imager)
-	- 1.8m (MOA imager)
+- B&C (0.6m; FLI imager)
+- OC (0.6m, robotic; FLI imager)
+- 1m (FLI imager)
+- 1.8m (MOA imager)
 
 We can set the sky brightness with the `moon_phase` variable. Options for Moon phase are:
-	- bright
-	- grey
-	- dark
+- bright
+- grey
+- dark
 
 Please report and issues to: ryan.ridden@canterbury.ac.nz
