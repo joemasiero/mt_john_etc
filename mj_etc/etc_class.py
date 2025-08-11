@@ -257,7 +257,7 @@ class ETC():
 		"""
 		if mag is not None:
 			self.source = Source(mag, self.detector, self.telescope)
-		self.exp_time = time 
+		self.exp_time = time * u.s
 		self.calculate_SNR()
 		return self.snr
 
